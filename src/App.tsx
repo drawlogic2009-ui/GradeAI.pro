@@ -529,6 +529,7 @@ function App() {
   const [newStudentId, setNewStudentId] = useState('');
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
   const [showPortalPopup, setShowPortalPopup] = useState(false);
+  const [showApiHelp, setShowApiHelp] = useState(false);
   const [previousStep, setPreviousStep] = useState<string | null>(null);
   const [timelineFilter, setTimelineFilter] = useState<string>('all');
   const [studentSortType, setStudentSortType] = useState<'name-asc' | 'name-desc' | 'ranked'>('name-asc');
@@ -1385,7 +1386,7 @@ function App() {
             <div className="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/20">
               <GraduationCap className="text-black" />
             </div>
-            <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">gradai.pro</h1>
+            <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">GradeAI.pro</h1>
           </div>
           
           {isCheckingProfile || isSigningIn ? (
@@ -1544,7 +1545,7 @@ function App() {
             <div className="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/20">
               <GraduationCap className="text-black" />
             </div>
-            <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">gradai.pro</h1>
+            <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">GradeAI.pro</h1>
           </div>
           
           <h2 className="text-xl font-medium mb-2 text-slate-900 dark:text-white">Welcome, {user?.displayName}</h2>
@@ -4035,7 +4036,16 @@ function App() {
                   )}
                   {(portalType === 'canvas' || portalType === 'edunext') && (
                     <div className="space-y-2">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 dark:text-white/30 ml-1">API Access Token</label>
+                      <div className="flex items-center justify-between ml-1">
+                        <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 dark:text-white/30">API Access Token</label>
+                        <button 
+                          onClick={() => setShowApiHelp(true)}
+                          className="text-[10px] text-emerald-500 hover:text-emerald-600 dark:hover:text-emerald-400 font-medium flex items-center gap-1"
+                        >
+                          <Info size={12} />
+                          How to find this
+                        </button>
+                      </div>
                       <input 
                         type="password"
                         placeholder="Paste your API token here"
@@ -4083,6 +4093,90 @@ function App() {
                     className="flex-1 py-3 rounded-2xl bg-emerald-500 text-black font-bold text-sm hover:bg-emerald-400 transition-all shadow-lg shadow-emerald-500/20"
                   >
                     Save Changes
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showApiHelp && (
+          <div key="api-help-modal" className="fixed inset-0 z-[110] flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowApiHelp(false)}
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-lg bg-white dark:bg-[#151515] border border-slate-200 dark:border-white/10 rounded-3xl p-8 shadow-2xl overflow-hidden"
+            >
+              <button 
+                onClick={() => setShowApiHelp(false)}
+                className="absolute top-6 right-6 text-slate-400 hover:text-slate-600 dark:hover:text-white/60 transition-colors"
+              >
+                <X size={20} />
+              </button>
+              
+              <div className="flex items-center gap-4 mb-6">
+                <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 flex items-center justify-center text-emerald-500 shrink-0">
+                  <Info size={24} />
+                </div>
+                <div>
+                  <h3 className="text-xl font-bold text-slate-900 dark:text-white">How to find your API Token</h3>
+                  <p className="text-sm text-slate-500 dark:text-white/50">Follow these steps to connect your LMS.</p>
+                </div>
+              </div>
+
+              <div className="space-y-6">
+                {portalType === 'canvas' ? (
+                  <div className="space-y-4">
+                    <div className="flex gap-4 items-start">
+                      <div className="w-6 h-6 rounded-full bg-slate-100 dark:bg-white/5 flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">1</div>
+                      <p className="text-sm text-slate-600 dark:text-white/70">Log into your Canvas account.</p>
+                    </div>
+                    <div className="flex gap-4 items-start">
+                      <div className="w-6 h-6 rounded-full bg-slate-100 dark:bg-white/5 flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">2</div>
+                      <p className="text-sm text-slate-600 dark:text-white/70">Click on <strong>Account</strong> in the global navigation menu, then click <strong>Settings</strong>.</p>
+                    </div>
+                    <div className="flex gap-4 items-start">
+                      <div className="w-6 h-6 rounded-full bg-slate-100 dark:bg-white/5 flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">3</div>
+                      <p className="text-sm text-slate-600 dark:text-white/70">Scroll down to the <strong>Approved Integrations</strong> section and click the <strong>+ New Access Token</strong> button.</p>
+                    </div>
+                    <div className="flex gap-4 items-start">
+                      <div className="w-6 h-6 rounded-full bg-slate-100 dark:bg-white/5 flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">4</div>
+                      <p className="text-sm text-slate-600 dark:text-white/70">Give it a purpose (e.g., "GradeAI"), click <strong>Generate Token</strong>, and copy the long string of characters.</p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="flex gap-4 items-start">
+                      <div className="w-6 h-6 rounded-full bg-slate-100 dark:bg-white/5 flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">1</div>
+                      <p className="text-sm text-slate-600 dark:text-white/70">Log into your Edunext account.</p>
+                    </div>
+                    <div className="flex gap-4 items-start">
+                      <div className="w-6 h-6 rounded-full bg-slate-100 dark:bg-white/5 flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">2</div>
+                      <p className="text-sm text-slate-600 dark:text-white/70">Go to your <strong>Profile Settings</strong> or <strong>Developer Settings</strong>.</p>
+                    </div>
+                    <div className="flex gap-4 items-start">
+                      <div className="w-6 h-6 rounded-full bg-slate-100 dark:bg-white/5 flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">3</div>
+                      <p className="text-sm text-slate-600 dark:text-white/70">Look for an option to generate a <strong>Personal Access Token</strong> or <strong>API Key</strong>.</p>
+                    </div>
+                  </div>
+                )}
+                
+                <div className="pt-4 flex justify-end">
+                  <button 
+                    onClick={() => setShowApiHelp(false)}
+                    className="px-6 py-3 rounded-2xl bg-emerald-500 text-black font-bold text-sm hover:bg-emerald-400 transition-all shadow-lg shadow-emerald-500/20"
+                  >
+                    Got it
                   </button>
                 </div>
               </div>
