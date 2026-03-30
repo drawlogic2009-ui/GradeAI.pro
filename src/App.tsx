@@ -839,10 +839,11 @@ function App() {
   // --- Onboarding ---
   const handleOnboardingSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (user && portalUrl) {
+    if (user && (portalUrl || portalType === 'custom')) {
       try {
-        await updateDoc(doc(db, 'users', user.uid), { portalUrl, portalType });
-        setUserProfile(prev => prev ? { ...prev, portalUrl, portalType } : null);
+        const finalUrl = portalType === 'custom' ? 'Custom Portal (via Extension)' : portalUrl;
+        await updateDoc(doc(db, 'users', user.uid), { portalUrl: finalUrl, portalType });
+        setUserProfile(prev => prev ? { ...prev, portalUrl: finalUrl, portalType } : null);
         setStep('dashboard');
         setModal({
           type: 'info',
@@ -1043,7 +1044,29 @@ function App() {
       const pType = userProfile?.portalType || 'google-classroom';
       const token = localStorage.getItem(`${pType}_token`);
       
-      if (token) {
+      if (pType === 'custom') {
+        setSyncLogs(prev => [...prev, `[SYSTEM] Custom Portal selected. Waiting for GradeAI Chrome Extension...`]);
+        setSyncLogs(prev => [...prev, `[SYSTEM] Please open your school portal and click the "Grade with AI" button.`]);
+        
+        // Simulate waiting for extension to send data
+        await new Promise(r => setTimeout(r, 2500));
+        setSyncLogs(prev => [...prev, `[SUCCESS] Received data from Chrome Extension!`]);
+        setSyncLogs(prev => [...prev, `[SYSTEM] Processing coursework...`]);
+        
+        // Simulate the rest of the analysis
+        setTimeout(async () => {
+          await updateDoc(doc(db, 'homeworks', hw.id), { syncStatus: 'analyzing' });
+          setSyncLogs(prev => [...prev, `[SYSTEM] Analyzing submissions with AI...`]);
+          
+          setTimeout(async () => {
+            await updateDoc(doc(db, 'homeworks', hw.id), { 
+              syncStatus: 'completed',
+              lastSyncedAt: new Date().toISOString()
+            });
+            setSyncLogs(prev => [...prev, `[SUCCESS] Analysis complete.`]);
+          }, 3000);
+        }, 2000);
+      } else if (token) {
         setSyncLogs(prev => [...prev, `[SYSTEM] Authenticated with ${pType.toUpperCase()} API. Fetching courses...`]);
         try {
           // Real API call simulation based on portal type
@@ -1064,11 +1087,6 @@ function App() {
           } else if (pType === 'edunext') {
             // Simulated Edunext API call
             setSyncLogs(prev => [...prev, `[SYSTEM] Connecting to Edunext instance...`]);
-            await new Promise(r => setTimeout(r, 1000));
-            coursesCount = Math.floor(Math.random() * 5) + 1;
-          } else {
-            // Simulated Custom API call
-            setSyncLogs(prev => [...prev, `[SYSTEM] Connecting to Custom LMS instance...`]);
             await new Promise(r => setTimeout(r, 1000));
             coursesCount = Math.floor(Math.random() * 5) + 1;
           }
@@ -1539,7 +1557,7 @@ function App() {
                 {[
                   { id: 'google-classroom', name: 'Google Classroom', icon: Globe },
                   { id: 'canvas', name: 'Canvas LMS', icon: School },
-                  { id: 'other', name: 'Other / Manual', icon: Plus }
+                  { id: 'custom', name: 'Custom Portal', icon: Plus }
                 ].map((p) => (
                   <button
                     key={p.id}
@@ -1567,20 +1585,31 @@ function App() {
               </div>
             </div>
 
-            <div className="space-y-3">
-              <label className="text-xs uppercase tracking-widest font-semibold text-slate-400 dark:text-white/40">Portal URL</label>
-              <div className="relative">
-                <Globe className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 dark:text-white/20" size={18} />
-                <input
-                  required
-                  type="url"
-                  placeholder="https://classroom.google.com/..."
-                  className="w-full bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-2xl py-4 pl-12 pr-4 focus:outline-none focus:border-emerald-500 transition-colors text-slate-900 dark:text-white shadow-sm"
-                  value={portalUrl}
-                  onChange={(e) => setPortalUrl(e.target.value)}
-                />
+            {portalType !== 'custom' && (
+              <div className="space-y-3">
+                <label className="text-xs uppercase tracking-widest font-semibold text-slate-400 dark:text-white/40">Portal URL</label>
+                <div className="relative">
+                  <Globe className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 dark:text-white/20" size={18} />
+                  <input
+                    required
+                    type="url"
+                    placeholder="https://classroom.google.com/..."
+                    className="w-full bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-2xl py-4 pl-12 pr-4 focus:outline-none focus:border-emerald-500 transition-colors text-slate-900 dark:text-white shadow-sm"
+                    value={portalUrl}
+                    onChange={(e) => setPortalUrl(e.target.value)}
+                  />
+                </div>
               </div>
-            </div>
+            )}
+
+            {portalType === 'custom' && (
+              <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl flex gap-3 items-start">
+                <Info className="text-blue-500 shrink-0 mt-0.5" size={16} />
+                <p className="text-xs text-blue-600 dark:text-blue-400 font-medium leading-relaxed">
+                  Custom portals don't require a URL or API token. You'll use the GradeAI Chrome Extension directly on your school's website to sync data!
+                </p>
+              </div>
+            )}
 
             <button
               type="submit"
@@ -3990,19 +4019,21 @@ function App() {
                 </div>
 
                 <div className="space-y-4">
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 dark:text-white/30 ml-1">
-                      {portalType === 'canvas' ? 'Canvas Instance URL' : portalType === 'edunext' ? 'Edunext Instance URL' : 'Portal URL'}
-                    </label>
-                    <input 
-                      type="text"
-                      value={portalUrl}
-                      onChange={(e) => setPortalUrl(e.target.value)}
-                      placeholder={portalType === 'canvas' ? 'e.g., canvas.instructure.com' : portalType === 'edunext' ? 'e.g., school.edunext.co' : 'e.g., mylms.school.edu'}
-                      className="w-full px-4 py-3 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-white/10 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
-                    />
-                  </div>
-                  {(portalType !== 'google-classroom') && (
+                  {portalType !== 'custom' && (
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 dark:text-white/30 ml-1">
+                        {portalType === 'canvas' ? 'Canvas Instance URL' : portalType === 'edunext' ? 'Edunext Instance URL' : 'Portal URL'}
+                      </label>
+                      <input 
+                        type="text"
+                        value={portalUrl}
+                        onChange={(e) => setPortalUrl(e.target.value)}
+                        placeholder={portalType === 'canvas' ? 'e.g., canvas.instructure.com' : portalType === 'edunext' ? 'e.g., school.edunext.co' : 'e.g., mylms.school.edu'}
+                        className="w-full px-4 py-3 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-white/10 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                      />
+                    </div>
+                  )}
+                  {(portalType === 'canvas' || portalType === 'edunext') && (
                     <div className="space-y-2">
                       <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 dark:text-white/30 ml-1">API Access Token</label>
                       <input 
@@ -4016,7 +4047,15 @@ function App() {
                         className="w-full px-4 py-3 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-white/10 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
                       />
                       <p className="text-[10px] text-slate-400 dark:text-white/40 ml-1">
-                        Required for syncing. Generate this in your {portalType === 'canvas' ? 'Canvas' : portalType === 'edunext' ? 'Edunext' : 'LMS'} account settings.
+                        Required for syncing. Generate this in your {portalType === 'canvas' ? 'Canvas' : 'Edunext'} account settings.
+                      </p>
+                    </div>
+                  )}
+                  {portalType === 'custom' && (
+                    <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl flex gap-3 items-start">
+                      <Info className="text-blue-500 shrink-0 mt-0.5" size={16} />
+                      <p className="text-xs text-blue-600 dark:text-blue-400 font-medium leading-relaxed">
+                        Custom portals do not use API tokens. To sync grades, please install the GradeAI Chrome Extension and use it directly on your school's website!
                       </p>
                     </div>
                   )}
@@ -4032,11 +4071,12 @@ function App() {
                   <button 
                     onClick={async () => {
                       if (user) {
+                        const finalUrl = portalType === 'custom' ? 'Custom Portal (via Extension)' : portalUrl;
                         await updateDoc(doc(db, 'users', user.uid), {
                           portalType,
-                          portalUrl
+                          portalUrl: finalUrl
                         });
-                        setUserProfile(prev => prev ? { ...prev, portalType, portalUrl } : null);
+                        setUserProfile(prev => prev ? { ...prev, portalType, portalUrl: finalUrl } : null);
                         setShowPortalPopup(false);
                       }
                     }}
