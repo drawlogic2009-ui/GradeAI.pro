@@ -1,0 +1,96 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Teacher's profile and settings",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "portalUrl": { "type": "string" },
+        "portalType": { "type": "string", "enum": ["google-classroom", "custom"] }
+      },
+      "required": ["uid", "name", "email"]
+    },
+    "Class": {
+      "title": "Class",
+      "description": "A class managed by the teacher",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "section": { "type": "string" },
+        "totalStudents": { "type": "number" },
+        "portalUrl": { "type": "string" },
+        "teacherUid": { "type": "string" }
+      },
+      "required": ["id", "name", "section", "totalStudents", "teacherUid"]
+    },
+    "Student": {
+      "title": "Student",
+      "description": "A student in a class",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "studentId": { "type": "string" },
+        "classId": { "type": "string" },
+        "teacherUid": { "type": "string" }
+      },
+      "required": ["id", "name", "studentId", "classId", "teacherUid"]
+    },
+    "Homework": {
+      "title": "Homework",
+      "description": "A homework assignment",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "classId": { "type": "string" },
+        "title": { "type": "string" },
+        "category": { "type": "string", "enum": ["technical", "paragraph"] },
+        "questions": { "type": "array" },
+        "deadline": { "type": "string" },
+        "totalStrength": { "type": "number" },
+        "teacherUid": { "type": "string" }
+      },
+      "required": ["id", "classId", "title", "category", "questions", "deadline", "teacherUid"]
+    },
+    "Submission": {
+      "title": "Submission",
+      "description": "A student's submission for a homework",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "homeworkId": { "type": "string" },
+        "studentId": { "type": "string" },
+        "status": { "type": "string", "enum": ["perfect", "inaccurate", "wrong"] },
+        "feedback": { "type": "string" },
+        "teacherUid": { "type": "string" }
+      },
+      "required": ["id", "homeworkId", "studentId", "status", "teacherUid"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": "User",
+      "description": "Teacher's profile"
+    },
+    "/classes/{classId}": {
+      "schema": "Class",
+      "description": "Classes managed by teachers"
+    },
+    "/students/{studentId}": {
+      "schema": "Student",
+      "description": "Students in classes"
+    },
+    "/homeworks/{homeworkId}": {
+      "schema": "Homework",
+      "description": "Homework assignments"
+    },
+    "/submissions/{submissionId}": {
+      "schema": "Submission",
+      "description": "Student submissions"
+    }
+  }
+}

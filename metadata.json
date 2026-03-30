@@ -1,0 +1,5 @@
+{
+  "name": "gradai.pro",
+  "description": "An AI-powered grading assistant for teachers to automate homework checking and provide instant feedback for technical and paragraph-based subjects.",
+  "requestFramePermissions": []
+}

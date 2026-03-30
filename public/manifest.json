@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "GradeAI.pro",
+  "version": "1.0.0",
+  "description": "Universal AI grading assistant that integrates directly with any Learning Management System (LMS) or classroom portal.",
+  "permissions": ["activeTab", "storage", "identity"],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "action": {
+    "default_popup": "index.html",
+    "default_title": "Open GradeAI"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": ["content.js"]
+    }
+  ],
+  "oauth2": {
+    "client_id": "YOUR_GOOGLE_CLOUD_CLIENT_ID.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/classroom.courses.readonly",
+      "https://www.googleapis.com/auth/classroom.rosters.readonly",
+      "https://www.googleapis.com/auth/classroom.coursework.students.readonly"
+    ]
+  }
+}
