@@ -47,3 +47,12 @@ export interface Submission {
   feedback: string;
   submittedAt: string;
 }
+
+export interface ModalState {
+  type: 'prompt' | 'confirm' | 'info' | 'add-student-manual';
+  title: string;
+  message: string;
+  value?: string;
+  onConfirm: (val?: string, val2?: string) => void;
+  onCancel: () => void;
+}
