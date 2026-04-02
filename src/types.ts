@@ -3,14 +3,14 @@ export type PortalType = 'google-classroom' | 'canvas' | 'edunext' | 'other' | '
 export interface Student {
   id: string;
   name: string;
-  studentId: string; // Unique ID within the class
+  studentId: string;
   classId: string;
 }
 
 export interface ClassInfo {
   id: string;
-  name: string; // e.g., "Class 6"
-  section: string; // e.g., "A"
+  name: string;
+  section: string;
   portalUrl: string;
   students: Student[];
   totalStudents: number;
@@ -18,21 +18,21 @@ export interface ClassInfo {
 
 export type SubjectCategory = 'technical' | 'paragraph';
 
-export interface Homework {
+export interface AnalysisReport {
   id: string;
   classId: string;
   title: string;
   description: string;
   category: SubjectCategory;
-  deadline: string; // ISO date
-  createdAt: string; // ISO date
-  totalStrength: number;
-  questionPaperUrl?: string; // Global question paper for the assignment
-  solutionPaperUrl?: string; // Global solution paper for the assignment
-  hasDiagram?: boolean;
-  diagramUrl?: string;
-  syncStatus?: 'idle' | 'scanning' | 'analyzing' | 'completed' | 'failed';
-  lastSyncedAt?: string;
+  createdAt: string;
+  status: 'processing' | 'completed' | 'failed';
+  totalFiles: number;
+  processedFiles: number;
+  results: BatchResult[];
+  questionBank: string;
+  answerKey: string;
+  questionPaperUrl?: string;
+  solutionPaperUrl?: string;
 }
 
 export type GradeStatus = 'perfect' | 'inaccurate' | 'wrong' | 'unattempted';
@@ -42,10 +42,45 @@ export interface Submission {
   homeworkId: string;
   studentId: string;
   studentName: string;
-  content: string; // The student's answer text or file content
+  content: string;
   status: GradeStatus;
   feedback: string;
   submittedAt: string;
+  fileName?: string;
+  score?: string;
+  fileData?: string;
+  questionBreakdown?: QuestionAnalysis[];
+  keywords?: {
+    student: string[];
+    answerKey: string[];
+  };
+}
+
+export interface QuestionAnalysis {
+  questionNumber: number;
+  status: 'Perfect' | 'Inaccurate' | 'Wrong';
+  feedback: string;
+}
+
+export interface BatchResult {
+  id: string;
+  studentName: string;
+  score: string;
+  feedback: string;
+  status: 'Perfect' | 'Inaccurate' | 'Wrong';
+  fileName: string;
+  fileData?: string;
+  questionBreakdown?: QuestionAnalysis[];
+  keywords?: {
+    student: string[];
+    answerKey: string[];
+  };
+}
+
+export interface UploadedFile {
+  file: File;
+  preview: string;
+  id: string;
 }
 
 export interface ModalState {

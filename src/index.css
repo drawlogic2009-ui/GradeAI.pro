@@ -6,6 +6,31 @@
 }
 
 @layer base {
+  @media print {
+    .no-print {
+      display: none !important;
+    }
+    body {
+      background: white !important;
+      color: black !important;
+    }
+    .print-only {
+      display: block !important;
+    }
+    .print-container {
+      width: 100% !important;
+      margin: 0 !important;
+      padding: 20px !important;
+      border: none !important;
+      box-shadow: none !important;
+    }
+    .print-break-inside-avoid {
+      break-inside: avoid;
+    }
+  }
+}
+
+@layer base {
   * {
     @apply border-slate-200 dark:border-white/10;
   }
