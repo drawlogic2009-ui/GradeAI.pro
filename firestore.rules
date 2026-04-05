@@ -1,0 +1,154 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.teacherId;
+    }
+
+    function isCreatingOwnDoc() {
+      return isAuthenticated() && request.auth.uid == request.resource.data.teacherId;
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isValidString(field, minLen, maxLen) {
+      return request.resource.data[field] is string &&
+             request.resource.data[field].size() >= minLen &&
+             request.resource.data[field].size() <= maxLen;
+    }
+
+    function isValidOptionalString(field, minLen, maxLen) {
+      return !('field' in request.resource.data) ||
+             (request.resource.data[field] is string &&
+              request.resource.data[field].size() >= minLen &&
+              request.resource.data[field].size() <= maxLen);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    function isValidUserProfile() {
+      return hasRequiredFields(['uid', 'email', 'currentTier', 'createdAt']) &&
+             request.resource.data.uid == request.auth.uid &&
+             request.resource.data.email is string &&
+             request.resource.data.currentTier in ['free', 'pro', 'pro+'] &&
+             request.resource.data.createdAt is string;
+    }
+
+    function isValidClass() {
+      return hasRequiredFields(['name', 'section', 'teacherId', 'createdAt']) &&
+             isValidString('name', 1, 100) &&
+             isValidString('section', 0, 50) &&
+             request.resource.data.teacherId == request.auth.uid &&
+             request.resource.data.createdAt is string;
+    }
+
+    function isValidStudent() {
+      return hasRequiredFields(['name', 'classId', 'teacherId', 'createdAt']) &&
+             isValidString('name', 1, 100) &&
+             isValidString('classId', 1, 100) &&
+             request.resource.data.teacherId == request.auth.uid &&
+             request.resource.data.createdAt is string;
+    }
+
+    function isValidReport() {
+      return hasRequiredFields(['title', 'classId', 'teacherId', 'criteria', 'createdAt']) &&
+             isValidString('title', 1, 200) &&
+             isValidString('classId', 1, 100) &&
+             request.resource.data.teacherId == request.auth.uid &&
+             request.resource.data.criteria is string &&
+             request.resource.data.createdAt is string;
+    }
+
+    function isValidSubmission() {
+      return hasRequiredFields(['studentId', 'studentName', 'classId', 'reportId', 'teacherId', 'status', 'score', 'feedback', 'submittedAt']) &&
+             isValidString('studentId', 1, 100) &&
+             isValidString('studentName', 1, 100) &&
+             isValidString('classId', 1, 100) &&
+             isValidString('reportId', 1, 100) &&
+             request.resource.data.teacherId == request.auth.uid &&
+             request.resource.data.status in ['perfect', 'needs_review', 'wrong'] &&
+             request.resource.data.score is number &&
+             request.resource.data.feedback is string &&
+             request.resource.data.submittedAt is string;
+    }
+
+    function isValidCalendarEvent() {
+      return hasRequiredFields(['date', 'title', 'type', 'teacherId', 'createdAt']) &&
+             isValidString('date', 1, 20) &&
+             isValidString('title', 1, 100) &&
+             request.resource.data.type in ['holiday', 'important'] &&
+             request.resource.data.teacherId == request.auth.uid &&
+             request.resource.data.createdAt is string;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      // Only allow creation/update of own profile. currentTier defaults to free, but we allow them to set it initially.
+      // In a real app, currentTier would be updated by a backend webhook (e.g. Stripe).
+      allow create: if isOwner(userId) && isValidUserProfile();
+      allow update: if isOwner(userId) && isValidUserProfile() && 
+                    // Prevent users from upgrading themselves for free
+                    request.resource.data.currentTier == resource.data.currentTier;
+      allow delete: if isOwner(userId);
+    }
+
+    match /classes/{classId} {
+      allow read: if isDocOwner();
+      allow create: if isCreatingOwnDoc() && isValidClass();
+      allow update: if isDocOwner() && isCreatingOwnDoc() && isValidClass();
+      allow delete: if isDocOwner();
+    }
+
+    match /students/{studentId} {
+      allow read: if isDocOwner();
+      allow create: if isCreatingOwnDoc() && isValidStudent();
+      allow update: if isDocOwner() && isCreatingOwnDoc() && isValidStudent();
+      allow delete: if isDocOwner();
+    }
+
+    match /reports/{reportId} {
+      allow read: if isDocOwner();
+      allow create: if isCreatingOwnDoc() && isValidReport();
+      allow update: if isDocOwner() && isCreatingOwnDoc() && isValidReport();
+      allow delete: if isDocOwner();
+    }
+
+    match /submissions/{submissionId} {
+      allow read: if isDocOwner();
+      allow create: if isCreatingOwnDoc() && isValidSubmission();
+      allow update: if isDocOwner() && isCreatingOwnDoc() && isValidSubmission();
+      allow delete: if isDocOwner();
+    }
+
+    match /calendarEvents/{eventId} {
+      allow read: if isDocOwner();
+      allow create: if isCreatingOwnDoc() && isValidCalendarEvent();
+      allow update: if isDocOwner() && isCreatingOwnDoc() && isValidCalendarEvent();
+      allow delete: if isDocOwner();
+    }
+  }
+}

@@ -49,7 +49,9 @@ import {
   ListChecks,
   HelpCircle,
   CheckSquare,
-  Eye
+  Eye,
+  Star,
+  ExternalLink
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -65,8 +67,11 @@ import {
   Cell,
   Legend
 } from 'recharts';
-import { format, isAfter, parseISO } from 'date-fns';
+import { format, isAfter, parseISO, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, addMonths, subMonths, getDay } from 'date-fns';
 import { GoogleGenAI } from "@google/genai";
+import { auth, db } from './firebase';
+import { signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
+import { collection, doc, setDoc, getDoc, onSnapshot, query, where, deleteDoc, writeBatch } from 'firebase/firestore';
 import { cn } from './lib/utils';
 import { 
   PortalType, 
@@ -107,6 +112,12 @@ const MOCK_CHART_DATA = [
 // analysis of student scripts using Gemini's vision and reasoning.
 // -------------------------------------------------------------------------
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+// --- Helper Functions ---
+const cleanJson = (text: string) => {
+  if (!text) return '{}';
+  return text.replace(/```json/g, '').replace(/```/g, '').trim();
+};
 
 async function gradeAnswer(
   report: AnalysisReport, 
@@ -183,7 +194,7 @@ async function gradeAnswer(
     // For now, we rely on the text context and the student answer image.
     
     const response = await ai.models.generateContent({ model, contents, config: { responseMimeType: "application/json" } });
-    return JSON.parse(response.text || "{}");
+    return JSON.parse(cleanJson(response.text || "{}"));
   } catch (error) {
     console.error("AI Grading failed:", error);
     return { status: 'wrong', feedback: "Error during AI analysis." };
@@ -219,25 +230,29 @@ function HighlightedText({ text, keywords, color = 'indigo' }: { text: string, k
             </span>
           );
         }
-        return part;
+        return <span key={i}>{part}</span>;
       })}
     </p>
   );
 }
 
-function SidebarLink({ icon, label, active, onClick }: { icon: React.ReactNode, label: string, active: boolean, onClick: () => void }) {
+function SidebarLink({ icon, label, active, onClick, expanded = true }: { icon: React.ReactNode, label: string, active: boolean, onClick: () => void, expanded?: boolean }) {
   return (
     <button 
       onClick={onClick}
       className={cn(
-        "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all",
+        "flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all",
+        expanded ? "w-full" : "w-12 justify-center px-0",
         active 
-          ? "bg-indigo-600 text-white shadow-lg shadow-indigo-200 dark:shadow-none" 
+          ? "bg-emerald-600 text-white shadow-lg shadow-emerald-200 dark:shadow-none" 
           : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100 hover:bg-slate-50 dark:hover:bg-white/5"
       )}
+      title={!expanded ? label : undefined}
     >
-      {icon}
-      {label}
+      <div className={cn(!active && "text-slate-400")}>
+        {icon}
+      </div>
+      {expanded && <span>{label}</span>}
     </button>
   );
 }
@@ -291,7 +306,12 @@ function Modal({ isOpen, onClose, title, children }: { isOpen: boolean, onClose:
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'classes' | 'students' | 'reports' | 'batch' | 'activity' | 'calendar' | 'individual-grading'>('dashboard');
+  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'classes' | 'students' | 'reports' | 'batch' | 'activity' | 'calendar' | 'individual-grading' | 'settings'>('dashboard');
   const [selectedReport, setSelectedReport] = useState<AnalysisReport | null>(null);
   const [isGrading, setIsGrading] = useState(false);
   const [isExtractingText, setIsExtractingText] = useState(false);
@@ -308,49 +328,185 @@ export default function App() {
   const [isAnalysisModalOpen, setIsAnalysisModalOpen] = useState(false);
   const [viewingResult, setViewingResult] = useState<BatchResult | null>(null);
 
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(true);
+  const [currentTier, setCurrentTier] = useState<'free' | 'pro' | 'pro+'>('pro');
+  
+  // Calendar State
+  const [currentMonth, setCurrentMonth] = useState(new Date());
+  const [calendarEvents, setCalendarEvents] = useState<{id: string, date: string, title: string, type: 'holiday'|'important'}[]>([
+    { id: '1', date: '2026-04-10', title: 'Good Friday', type: 'holiday' },
+    { id: '2', date: '2026-04-12', title: 'Easter Sunday', type: 'holiday' },
+  ]);
+  const [selectedDate, setSelectedDate] = useState<Date | null>(null);
+  const [isEventModalOpen, setIsEventModalOpen] = useState(false);
+  const [newEventTitle, setNewEventTitle] = useState('');
+  const [newEventType, setNewEventType] = useState<'important' | 'holiday'>('important');
+  
+  // Notifications State
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+  const [showNotificationsDropdown, setShowNotificationsDropdown] = useState(false);
+
   const handleViewAnalysis = (result: BatchResult) => {
     setViewingResult(result);
     setIsAnalysisModalOpen(true);
   };
 
-  const [classes, setClasses] = useState<ClassInfo[]>(() => {
-    const saved = localStorage.getItem('gradeai_classes');
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [students, setStudents] = useState<Student[]>(() => {
-    const saved = localStorage.getItem('gradeai_students');
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [reports, setReports] = useState<AnalysisReport[]>(() => {
-    const saved = localStorage.getItem('gradeai_reports');
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [submissions, setSubmissions] = useState<Submission[]>(() => {
-    const saved = localStorage.getItem('gradeai_submissions');
-    if (saved) return JSON.parse(saved);
-    
-    // Initial mock data for a "good look"
-    const mockSubmissions: Submission[] = [];
-    const statuses: GradeStatus[] = ['perfect', 'inaccurate', 'wrong'];
-    const names = ['Alex Johnson', 'Sarah Miller', 'David Chen', 'Emily Davis', 'Michael Brown'];
-    
-    for (let i = 0; i < 20; i++) {
-      const d = new Date();
-      d.setDate(d.getDate() - Math.floor(Math.random() * 7));
-      mockSubmissions.push({
-        id: Math.random().toString(36).substr(2, 9),
-        homeworkId: 'mock-hw',
-        studentId: `student-${i % 5}`,
-        studentName: names[i % 5],
-        content: 'Sample answer content...',
-        status: statuses[Math.floor(Math.random() * 3)],
-        feedback: 'Great effort on this task!',
-        submittedAt: d.toISOString(),
-        score: `${Math.floor(Math.random() * 10) + 10}/20`
+  const requestNotificationPermission = async () => {
+    if (!("Notification" in window)) {
+      alert("This browser does not support desktop notification");
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    if (permission === "granted") {
+      setNotificationsEnabled(true);
+      new Notification("Notifications Enabled", {
+        body: "You will now receive alerts for grading completion and important events."
       });
     }
-    return mockSubmissions;
-  });
+  };
+
+  const handleNotificationClick = () => {
+    setShowNotificationsDropdown(!showNotificationsDropdown);
+  };
+
+  const handleDateClick = (date: Date) => {
+    setSelectedDate(date);
+    setIsEventModalOpen(true);
+  };
+
+  const handleAddEvent = async () => {
+    if (selectedDate && newEventTitle && user) {
+      const newEventId = Math.random().toString(36).substr(2, 9);
+      const newEvent = {
+        date: format(selectedDate, 'yyyy-MM-dd'),
+        title: newEventTitle,
+        type: newEventType,
+        teacherId: user.uid,
+        createdAt: new Date().toISOString()
+      };
+      
+      try {
+        await setDoc(doc(db, 'calendarEvents', newEventId), newEvent);
+        setIsEventModalOpen(false);
+        setNewEventTitle('');
+      } catch (error) {
+        console.error("Error adding event:", error);
+      }
+    }
+  };
+
+  const monthStart = startOfMonth(currentMonth);
+  const monthEnd = endOfMonth(currentMonth);
+  const days = eachDayOfInterval({ start: monthStart, end: monthEnd });
+  const startDayOfWeek = getDay(monthStart);
+  const paddingDays = Array.from({ length: startDayOfWeek }).map((_, i) => null);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      setUser(currentUser);
+      
+      if (currentUser) {
+        // Fetch user profile to get tier
+        const userDocRef = doc(db, 'users', currentUser.uid);
+        const userDoc = await getDoc(userDocRef);
+        
+        if (userDoc.exists()) {
+          setCurrentTier(userDoc.data().currentTier || 'free');
+        } else {
+          // Create new user profile
+          await setDoc(userDocRef, {
+            uid: currentUser.uid,
+            email: currentUser.email,
+            displayName: currentUser.displayName,
+            photoURL: currentUser.photoURL,
+            currentTier: 'free',
+            createdAt: new Date().toISOString()
+          });
+          setCurrentTier('free');
+        }
+      }
+      
+      setIsAuthReady(true);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  const handleLogin = async () => {
+    if (isLoggingIn) return;
+    setIsLoggingIn(true);
+    setAuthError(null);
+    try {
+      const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({
+        prompt: 'select_account'
+      });
+      await signInWithPopup(auth, provider);
+    } catch (error: any) {
+      console.error("Login failed:", error);
+      if (error.code === 'auth/popup-blocked') {
+        setAuthError("Popup was blocked by your browser. Please allow popups for this site or open the app in a new tab.");
+      } else if (error.code === 'auth/cancelled-popup-request') {
+        // Ignore, user just clicked multiple times or closed it
+      } else if (error.code === 'auth/popup-closed-by-user') {
+        // Ignore, user closed the popup
+      } else {
+        setAuthError(error.message || "An error occurred during login. Please try again.");
+      }
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error("Logout failed:", error);
+    }
+  };
+
+  useEffect(() => {
+    if (!user) return;
+
+    const qClasses = query(collection(db, 'classes'), where('teacherId', '==', user.uid));
+    const unsubClasses = onSnapshot(qClasses, (snapshot) => {
+      setClasses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ClassInfo)));
+    });
+
+    const qStudents = query(collection(db, 'students'), where('teacherId', '==', user.uid));
+    const unsubStudents = onSnapshot(qStudents, (snapshot) => {
+      setStudents(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Student)));
+    });
+
+    const qReports = query(collection(db, 'reports'), where('teacherId', '==', user.uid));
+    const unsubReports = onSnapshot(qReports, (snapshot) => {
+      setReports(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as AnalysisReport)));
+    });
+
+    const qSubmissions = query(collection(db, 'submissions'), where('teacherId', '==', user.uid));
+    const unsubSubmissions = onSnapshot(qSubmissions, (snapshot) => {
+      setSubmissions(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Submission)));
+    });
+
+    const qEvents = query(collection(db, 'calendarEvents'), where('teacherId', '==', user.uid));
+    const unsubEvents = onSnapshot(qEvents, (snapshot) => {
+      setCalendarEvents(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any)));
+    });
+
+    return () => {
+      unsubClasses();
+      unsubStudents();
+      unsubReports();
+      unsubSubmissions();
+      unsubEvents();
+    };
+  }, [user]);
+
+  const [classes, setClasses] = useState<ClassInfo[]>([]);
+  const [students, setStudents] = useState<Student[]>([]);
+  const [reports, setReports] = useState<AnalysisReport[]>([]);
+  const [submissions, setSubmissions] = useState<Submission[]>([]);
 
   // Batch State
   const [batchTitle, setBatchTitle] = useState('');
@@ -389,17 +545,20 @@ export default function App() {
   const [newStudentId, setNewStudentId] = useState('');
   const [newStudentClassId, setNewStudentClassId] = useState('');
   const [studentClassFilter, setStudentClassFilter] = useState<string>('all');
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    return (localStorage.getItem('gradeai_theme') as 'dark' | 'light') || 'dark';
+  });
+
+
 
   useEffect(() => {
-    localStorage.setItem('gradeai_classes', JSON.stringify(classes));
-    localStorage.setItem('gradeai_students', JSON.stringify(students));
-    localStorage.setItem('gradeai_reports', JSON.stringify(reports));
-    localStorage.setItem('gradeai_submissions', JSON.stringify(submissions));
-  }, [classes, students, reports, submissions]);
-
-  useEffect(() => {
-    document.documentElement.classList.add('dark');
-  }, []);
+    if (theme === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+    localStorage.setItem('gradeai_theme', theme);
+  }, [theme]);
 
   // --- Stats Calculation ---
   const stats = useMemo(() => {
@@ -515,36 +674,46 @@ export default function App() {
     return { overallChartData, questionChartData };
   }, [selectedReport]);
 
-  const handleAddClass = () => {
-    if (!newClassName) return;
-    const newClass: ClassInfo = {
-      id: Math.random().toString(36).substr(2, 9),
+  const handleAddClass = async () => {
+    if (!newClassName || !user) return;
+    const newClassId = Math.random().toString(36).substr(2, 9);
+    const newClass = {
       name: newClassName,
       section: newClassSection,
-      totalStudents: parseInt(newClassTotal) || 0,
-      portalUrl: '',
-      students: []
+      teacherId: user.uid,
+      createdAt: new Date().toISOString()
     };
-    setClasses([...classes, newClass]);
-    setIsClassModalOpen(false);
-    setNewClassName('');
-    setNewClassSection('');
-    setNewClassTotal('');
+    
+    try {
+      await setDoc(doc(db, 'classes', newClassId), newClass);
+      setIsClassModalOpen(false);
+      setNewClassName('');
+      setNewClassSection('');
+      setNewClassTotal('');
+    } catch (error) {
+      console.error("Error adding class:", error);
+    }
   };
 
-  const handleAddStudent = () => {
-    if (!newStudentName || !newStudentClassId) return;
-    const newStudent: Student = {
-      id: Math.random().toString(36).substr(2, 9),
+  const handleAddStudent = async () => {
+    if (!newStudentName || !newStudentClassId || !user) return;
+    const newStudentId = Math.random().toString(36).substr(2, 9);
+    const newStudent = {
       name: newStudentName,
-      studentId: newStudentId || `STU-${Math.floor(Math.random() * 1000)}`,
-      classId: newStudentClassId
+      classId: newStudentClassId,
+      teacherId: user.uid,
+      createdAt: new Date().toISOString()
     };
-    setStudents([...students, newStudent]);
-    setIsStudentModalOpen(false);
-    setNewStudentName('');
-    setNewStudentId('');
-    setNewStudentClassId('');
+    
+    try {
+      await setDoc(doc(db, 'students', newStudentId), newStudent);
+      setIsStudentModalOpen(false);
+      setNewStudentName('');
+      setNewStudentId('');
+      setNewStudentClassId('');
+    } catch (error) {
+      console.error("Error adding student:", error);
+    }
   };
 
   const handleBulkStudentImport = async () => {
@@ -571,13 +740,16 @@ export default function App() {
 
       const result = await ai.models.generateContent({
         model,
-        contents: [
-          { role: 'user', parts: [{ text: prompt }, { inlineData: { data: fileData, mimeType: bulkStudentFile.file.type } }] }
-        ],
+        contents: {
+          parts: [
+            { text: prompt }, 
+            { inlineData: { data: fileData, mimeType: bulkStudentFile.file.type } }
+          ]
+        },
         config: { responseMimeType: 'application/json' }
       });
 
-      const extractedStudents = JSON.parse(result.text || '[]');
+      const extractedStudents = JSON.parse(cleanJson(result.text || '[]'));
       const newStudents: Student[] = extractedStudents.map((s: any) => ({
         id: Math.random().toString(36).substr(2, 9),
         name: s.name,
@@ -596,32 +768,60 @@ export default function App() {
     }
   };
 
-  const handleConfirmDeleteClass = () => {
+  const handleConfirmDeleteClass = async () => {
     if (!classToDelete) return;
     
     const classId = classToDelete.id;
     
-    // 1. Delete the class
-    setClasses(prev => prev.filter(c => c.id !== classId));
-    
-    // 2. Delete all students in that class
-    setStudents(prev => prev.filter(s => s.classId !== classId));
-    
-    // 3. Find all reports for that class
-    const reportsToDelete = reports.filter(r => r.classId === classId);
-    const reportIdsToDelete = reportsToDelete.map(r => r.id);
-    
-    // 4. Delete the reports
-    setReports(prev => prev.filter(r => r.classId !== classId));
-    
-    // 5. Delete all submissions related to those reports
-    setSubmissions(prev => prev.filter(s => !reportIdsToDelete.includes(s.homeworkId)));
-    
-    // Reset state
-    setIsDeleteConfirmModalOpen(false);
-    setClassToDelete(null);
-    if (dashboardClassFilter === classId) setDashboardClassFilter('all');
-    if (studentClassFilter === classId) setStudentClassFilter('all');
+    try {
+      const batch = writeBatch(db);
+      
+      // 1. Delete the class
+      batch.delete(doc(db, 'classes', classId));
+      
+      // 2. Delete all students in that class
+      const studentsToDelete = students.filter(s => s.classId === classId);
+      studentsToDelete.forEach(s => batch.delete(doc(db, 'students', s.id)));
+      
+      // 3. Find all reports for that class
+      const reportsToDelete = reports.filter(r => r.classId === classId);
+      const reportIdsToDelete = reportsToDelete.map(r => r.id);
+      
+      // 4. Delete the reports
+      reportsToDelete.forEach(r => batch.delete(doc(db, 'reports', r.id)));
+      
+      // 5. Delete all submissions related to those reports
+      const submissionsToDelete = submissions.filter(s => reportIdsToDelete.includes(s.reportId || s.homeworkId));
+      submissionsToDelete.forEach(s => batch.delete(doc(db, 'submissions', s.id)));
+      
+      await batch.commit();
+      
+      // Reset state
+      setIsDeleteConfirmModalOpen(false);
+      setClassToDelete(null);
+      if (dashboardClassFilter === classId) setDashboardClassFilter('all');
+      if (studentClassFilter === classId) setStudentClassFilter('all');
+    } catch (error) {
+      console.error("Error deleting class:", error);
+    }
+  };
+
+  const [isClearDataModalOpen, setIsClearDataModalOpen] = useState(false);
+
+  const handleClearAllData = async () => {
+    if (!user) return;
+    try {
+      const batch = writeBatch(db);
+      classes.forEach(c => batch.delete(doc(db, 'classes', c.id)));
+      students.forEach(s => batch.delete(doc(db, 'students', s.id)));
+      reports.forEach(r => batch.delete(doc(db, 'reports', r.id)));
+      submissions.forEach(s => batch.delete(doc(db, 'submissions', s.id)));
+      calendarEvents.forEach(e => batch.delete(doc(db, 'calendarEvents', e.id)));
+      await batch.commit();
+      setIsClearDataModalOpen(false);
+    } catch (error) {
+      console.error("Error clearing data:", error);
+    }
   };
 
   const handleRecheck = (result: BatchResult) => {
@@ -661,10 +861,12 @@ export default function App() {
 
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
-        contents: [
-          { text: "Extract all the handwritten or typed text from this student's answer sheet. Return ONLY the extracted text, nothing else. If it's illegible, reply with 'Illegible text'." },
-          { inlineData: { data: base64, mimeType: file.type } }
-        ]
+        contents: {
+          parts: [
+            { text: "Extract all the handwritten or typed text from this student's answer sheet. Return ONLY the extracted text, nothing else. If it's illegible, reply with 'Illegible text'." },
+            { inlineData: { data: base64, mimeType: file.type } }
+          ]
+        }
       });
 
       setStudentAnswerText(response.text || '');
@@ -751,9 +953,11 @@ export default function App() {
     const totalEstimate = 15 + (studentFiles.length * 10);
     setEstimatedTime(totalEstimate);
 
+    const newReportId = Math.random().toString(36).substr(2, 9);
     const newReport: AnalysisReport = {
-      id: Math.random().toString(36).substr(2, 9),
+      id: newReportId,
       classId: batchClassId,
+      teacherId: user?.uid || 'guest',
       title: batchTitle,
       description: `Analysis for ${batchTitle}`,
       category: batchCategory,
@@ -768,7 +972,11 @@ export default function App() {
       solutionPaperUrl: solutionPaperFile?.preview
     };
 
-    setReports(prev => [newReport, ...prev]);
+    try {
+      await setDoc(doc(db, 'reports', newReportId), newReport);
+    } catch (error) {
+      console.error("Error creating report:", error);
+    }
 
     try {
       const results: BatchResult[] = [];
@@ -815,7 +1023,7 @@ export default function App() {
 
       const referenceResponse = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
-        contents: referenceContents
+        contents: { parts: referenceContents }
       });
 
       const masterContext = referenceResponse.text || "Standard grading context applied.";
@@ -866,14 +1074,16 @@ export default function App() {
 
         const response = await ai.models.generateContent({
           model: "gemini-3-flash-preview",
-          contents: [
-            { text: gradingPrompt },
-            { inlineData: { data: base64Data, mimeType: fileData.file.type } }
-          ],
+          contents: {
+            parts: [
+              { text: gradingPrompt },
+              { inlineData: { data: base64Data, mimeType: fileData.file.type } }
+            ]
+          },
           config: { responseMimeType: "application/json" }
         });
 
-        const data = JSON.parse(response.text || '{}');
+        const data = JSON.parse(cleanJson(response.text || '{}'));
         const fullFileData = `data:${fileData.file.type};base64,${base64Data}`;
         
         const result: BatchResult = {
@@ -898,9 +1108,12 @@ export default function App() {
         } : r));
 
         // Global submissions for activity log
+        const submissionId = Math.random().toString(36).substr(2, 9);
         const newSubmission: Submission = {
-          id: Math.random().toString(36).substr(2, 9),
-          homeworkId: newReport.id,
+          id: submissionId,
+          reportId: newReportId,
+          homeworkId: newReportId,
+          teacherId: user?.uid || 'guest',
           studentId: 'batch-student',
           studentName: result.studentName,
           content: 'Batch processed file',
@@ -913,7 +1126,20 @@ export default function App() {
           score: result.score,
           keywords: result.keywords
         };
-        setSubmissions(prev => [newSubmission, ...prev]);
+        
+        try {
+          await setDoc(doc(db, 'submissions', submissionId), newSubmission);
+          
+          // Update report in Firestore
+          await setDoc(doc(db, 'reports', newReportId), {
+            ...newReport,
+            processedFiles: i + 1,
+            results: [...results],
+            status: i + 1 === studentFiles.length ? 'completed' : 'processing'
+          }, { merge: true });
+        } catch (error) {
+          console.error("Error saving submission/report:", error);
+        }
       }
 
       // Finalize report status
@@ -940,6 +1166,65 @@ export default function App() {
       setAnswerKey('');
     }
   };
+
+  if (!isAuthReady) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950">
+        <Loader2 className="w-8 h-8 animate-spin text-emerald-500" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950 p-4">
+        <div className="max-w-md w-full bg-white dark:bg-slate-900 rounded-3xl shadow-xl border border-slate-200 dark:border-slate-800 p-8 text-center space-y-8">
+          <div className="mx-auto w-16 h-16 bg-emerald-100 dark:bg-emerald-900/30 rounded-2xl flex items-center justify-center mb-6">
+            <GraduationCap className="w-8 h-8 text-emerald-600 dark:text-emerald-400" />
+          </div>
+          <h1 className="text-3xl font-black tracking-tight text-slate-900 dark:text-white">LoomisAI</h1>
+          <p className="text-slate-500 dark:text-slate-400">Sign in to manage your classes, students, and AI-powered grading.</p>
+          
+          {authError && (
+            <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl text-sm text-red-600 dark:text-red-400 text-left flex gap-3 items-start">
+              <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />
+              <p>{authError}</p>
+            </div>
+          )}
+
+          <button
+            onClick={handleLogin}
+            disabled={isLoggingIn}
+            className="w-full flex items-center justify-center gap-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 px-6 py-4 rounded-xl font-bold hover:bg-slate-50 dark:hover:bg-slate-700 transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isLoggingIn ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            ) : (
+              <svg className="w-5 h-5" viewBox="0 0 24 24">
+                <path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
+                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
+              </svg>
+            )}
+            {isLoggingIn ? 'Signing in...' : 'Continue with Google'}
+          </button>
+          
+          <div className="pt-4 border-t border-slate-100 dark:border-slate-800">
+            <a 
+              href={window.location.href} 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="text-sm text-emerald-600 dark:text-emerald-400 hover:underline flex items-center justify-center gap-1"
+            >
+              <ExternalLink className="w-4 h-4" />
+              Open in new tab (if login fails)
+            </a>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans">
@@ -1174,59 +1459,135 @@ export default function App() {
       </Modal>
 
       {/* Sidebar */}
-      <aside className="fixed left-0 top-0 bottom-0 w-64 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 z-50 hidden lg:block no-print">
-        <div className="p-6">
-          <div className="flex items-center gap-2 mb-8">
-            <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
-              <GraduationCap className="text-white w-5 h-5" />
+      <aside className={cn(
+        "fixed left-0 top-0 bottom-0 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 z-50 hidden lg:flex flex-col transition-all duration-300 no-print",
+        isSidebarExpanded ? "w-64" : "w-20"
+      )}>
+        <div className="p-6 flex items-center justify-between">
+          <div className="flex items-center gap-3 overflow-hidden">
+            <div className="w-8 h-8 bg-emerald-600 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-200 dark:shadow-none shrink-0">
+              <GraduationCap className="w-5 h-5 text-white" />
             </div>
-            <h1 className="text-xl font-bold tracking-tight">GradeAI<span className="text-indigo-600">.pro</span></h1>
+            {isSidebarExpanded && (
+              <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-emerald-600 to-teal-600 whitespace-nowrap">
+                LoomisAI{currentTier === 'pro' ? '.Pro' : currentTier === 'pro+' ? '.Pro+' : ''}
+              </span>
+            )}
           </div>
+          <button 
+            onClick={() => setIsSidebarExpanded(!isSidebarExpanded)} 
+            className="p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 flex justify-center shrink-0"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+        </div>
 
-          <nav className="space-y-1">
-            <SidebarLink icon={<LayoutDashboard className="w-5 h-5" />} label="Dashboard" active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />
-            <SidebarLink icon={<BookOpen className="w-5 h-5" />} label="My Classes" active={activeTab === 'classes'} onClick={() => setActiveTab('classes')} />
-            <SidebarLink icon={<Users className="w-5 h-5" />} label="Students" active={activeTab === 'students'} onClick={() => setActiveTab('students')} />
-            <SidebarLink icon={<BarChart3 className="w-5 h-5" />} label="Analysis Reports" active={activeTab === 'reports'} onClick={() => setActiveTab('reports')} />
-            <SidebarLink icon={<Edit3 className="w-5 h-5" />} label="Individual Grading" active={activeTab === 'individual-grading'} onClick={() => setActiveTab('individual-grading')} />
-            <SidebarLink icon={<Sparkles className="w-5 h-5" />} label="Batch Grade" active={activeTab === 'batch'} onClick={() => setActiveTab('batch')} />
-            <SidebarLink icon={<History className="w-5 h-5" />} label="Activity Log" active={activeTab === 'activity'} onClick={() => setActiveTab('activity')} />
-            <SidebarLink icon={<CalendarIcon className="w-5 h-5" />} label="Calendar" active={activeTab === 'calendar'} onClick={() => setActiveTab('calendar')} />
-          </nav>
+        <nav className="flex-1 px-4 space-y-2 overflow-y-auto">
+          <SidebarLink icon={<LayoutDashboard className="w-5 h-5" />} label="Dashboard" active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} expanded={isSidebarExpanded} />
+          <SidebarLink icon={<BookOpen className="w-5 h-5" />} label="My Classes" active={activeTab === 'classes'} onClick={() => setActiveTab('classes')} expanded={isSidebarExpanded} />
+          <SidebarLink icon={<Users className="w-5 h-5" />} label="Students" active={activeTab === 'students'} onClick={() => setActiveTab('students')} expanded={isSidebarExpanded} />
+          <SidebarLink icon={<BarChart3 className="w-5 h-5" />} label="Analysis Reports" active={activeTab === 'reports'} onClick={() => setActiveTab('reports')} expanded={isSidebarExpanded} />
+          <SidebarLink icon={<Edit3 className="w-5 h-5" />} label="Individual Grading" active={activeTab === 'individual-grading'} onClick={() => setActiveTab('individual-grading')} expanded={isSidebarExpanded} />
+          <SidebarLink icon={<Sparkles className="w-5 h-5" />} label="Batch Grade" active={activeTab === 'batch'} onClick={() => setActiveTab('batch')} expanded={isSidebarExpanded} />
+          <SidebarLink icon={<History className="w-5 h-5" />} label="Activity Log" active={activeTab === 'activity'} onClick={() => setActiveTab('activity')} expanded={isSidebarExpanded} />
+          <SidebarLink icon={<CalendarIcon className="w-5 h-5" />} label="Calendar" active={activeTab === 'calendar'} onClick={() => setActiveTab('calendar')} expanded={isSidebarExpanded} />
+        </nav>
 
-          <div className="absolute bottom-6 left-6 right-6">
-            <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-800">
+        <div className="p-4 border-t border-slate-200 dark:border-slate-800 flex flex-col gap-2">
+          {isSidebarExpanded && (
+            <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-800 mb-2">
               <div className="flex items-center gap-3 mb-3">
-                <div className="w-10 h-10 rounded-full bg-indigo-100 dark:bg-indigo-900/30 flex items-center justify-center text-indigo-600 dark:text-indigo-400 font-bold">
-                  GT
-                </div>
-                <div>
-                  <p className="text-sm font-semibold truncate">Guest Teacher</p>
-                  <p className="text-xs text-slate-500 truncate">Free Plan</p>
+                {user?.photoURL ? (
+                  <img src={user.photoURL} alt={user.displayName || 'User'} className="w-10 h-10 rounded-full" referrerPolicy="no-referrer" />
+                ) : (
+                  <div className="w-10 h-10 rounded-full bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center text-emerald-600 dark:text-emerald-400 font-bold">
+                    {user?.displayName?.charAt(0) || 'T'}
+                  </div>
+                )}
+                <div className="overflow-hidden">
+                  <p className="text-sm font-semibold truncate">{user?.displayName || 'Teacher'}</p>
+                  <p className="text-xs text-slate-500 truncate capitalize">{currentTier} Plan</p>
                 </div>
               </div>
-              <button className="w-full flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors">
-                <Settings className="w-4 h-4" />
-                Settings
-              </button>
+              <div className="flex items-center justify-between">
+                <button 
+                  onClick={() => setActiveTab('settings')}
+                  className={cn(
+                    "flex items-center gap-2 text-sm transition-colors",
+                    activeTab === 'settings' 
+                      ? "text-emerald-600 dark:text-emerald-400 font-semibold" 
+                      : "text-slate-600 dark:text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400"
+                  )}
+                >
+                  <Settings className="w-4 h-4" />
+                  Settings
+                </button>
+                <button 
+                  onClick={handleLogout}
+                  className="text-slate-400 hover:text-red-500 transition-colors"
+                  title="Sign Out"
+                >
+                  <LogOut className="w-4 h-4" />
+                </button>
+              </div>
             </div>
-          </div>
+          )}
+          {!isSidebarExpanded && (
+            <button 
+              onClick={() => setActiveTab('settings')}
+              className={cn(
+                "w-12 h-12 flex items-center justify-center rounded-xl transition-colors mx-auto mb-2",
+                activeTab === 'settings' 
+                  ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-900/20 dark:text-emerald-400" 
+                  : "text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800"
+              )}
+              title="Settings"
+            >
+              <Settings className="w-5 h-5" />
+            </button>
+          )}
         </div>
       </aside>
 
       {/* Main Content */}
-      <main className="lg:ml-64 min-h-screen">
+      <main className={cn(
+        "min-h-screen flex flex-col transition-all duration-300",
+        isSidebarExpanded ? "lg:ml-64" : "lg:ml-20"
+      )}>
         <header className="h-16 border-b border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md sticky top-0 z-40 px-6 flex items-center justify-between no-print">
           <h2 className="text-lg font-semibold capitalize">{activeTab.replace('-', ' ')}</h2>
           <div className="flex items-center gap-4">
             <div className="relative hidden md:block">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-              <input type="text" placeholder="Search anything..." className="pl-10 pr-4 py-2 rounded-full bg-slate-100 dark:bg-slate-800 border-none text-sm focus:ring-2 focus:ring-indigo-500 outline-none w-64 transition-all" />
+              <input type="text" placeholder="Search anything..." className="pl-10 pr-4 py-2 rounded-full bg-slate-100 dark:bg-slate-800 border-none text-sm focus:ring-2 focus:ring-emerald-500 outline-none w-64 transition-all" />
             </div>
-            <button className="p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors relative">
-              <Bell className="w-5 h-5" />
-              <span className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full border-2 border-white dark:border-slate-900"></span>
-            </button>
+            <div className="relative">
+              <button 
+                onClick={handleNotificationClick}
+                className="p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors relative"
+              >
+                <Bell className="w-5 h-5" />
+                <span className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full border-2 border-white dark:border-slate-900"></span>
+              </button>
+              {showNotificationsDropdown && (
+                <div className="absolute right-0 mt-2 w-80 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl z-50 overflow-hidden">
+                  <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center">
+                    <h3 className="font-bold">Notifications</h3>
+                    {!notificationsEnabled && (
+                      <button onClick={requestNotificationPermission} className="text-xs text-emerald-600 hover:underline">
+                        Enable Desktop Alerts
+                      </button>
+                    )}
+                  </div>
+                  <div className="max-h-64 overflow-y-auto p-2">
+                    <div className="p-3 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg cursor-pointer">
+                      <p className="text-sm font-medium">Welcome to LoomisAI!</p>
+                      <p className="text-xs text-slate-500 mt-1">Start by adding a class and uploading some student papers.</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </header>
 
@@ -1283,7 +1644,7 @@ export default function App() {
                       </div>
                     </div>
                     <div className="h-[300px] w-full">
-                      <ResponsiveContainer width="100%" height="100%">
+                      <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                         <AreaChart data={stats.chartData}>
                           <defs>
                             <linearGradient id="colorPerfect" x1="0" y1="0" x2="0" y2="1">
@@ -1594,7 +1955,7 @@ export default function App() {
                       <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
                         <h3 className="font-bold text-lg mb-4">Overall Performance</h3>
                         <div className="h-[250px]">
-                          <ResponsiveContainer width="100%" height="100%">
+                          <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                             <PieChart>
                               <Pie
                                 data={batchAnalysisData.overallChartData}
@@ -1640,7 +2001,7 @@ export default function App() {
                             <div key={qData.questionNumber} className="flex-shrink-0 w-[200px] text-center p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-800">
                               <p className="text-sm font-bold mb-2">Question {qData.questionNumber}</p>
                               <div className="h-[120px]">
-                                <ResponsiveContainer width="100%" height="100%">
+                                <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                                   <PieChart>
                                     <Pie
                                       data={qData.data}
@@ -1744,10 +2105,10 @@ export default function App() {
                 </div>
               ) : (
                 <>
-                  <div className="hidden print-only mb-8 border-b-2 border-indigo-600 pb-4">
+                  <div className="hidden print-only mb-8 border-b-2 border-emerald-600 pb-4">
                     <div className="flex justify-between items-end">
                       <div>
-                        <h1 className="text-3xl font-black text-indigo-600">GradeAI.pro Analysis Report</h1>
+                        <h1 className="text-3xl font-black text-emerald-600">LoomisAI.pro Analysis Report</h1>
                         <p className="text-slate-500 font-bold uppercase tracking-widest text-xs mt-1">Official AI-Graded Student Assessment</p>
                       </div>
                       <div className="text-right">
@@ -2194,7 +2555,7 @@ export default function App() {
                   <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
                     <h3 className="font-bold text-lg mb-4">Overall Batch Analysis</h3>
                     <div className="h-[250px]">
-                      <ResponsiveContainer width="100%" height="100%">
+                      <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                         <PieChart>
                           <Pie
                             data={batchAnalysisData.overallChartData}
@@ -2223,7 +2584,7 @@ export default function App() {
                         <div key={qData.questionNumber} className="flex-shrink-0 w-[200px] text-center">
                           <p className="text-sm font-semibold mb-2">Question {qData.questionNumber}</p>
                           <div className="h-[150px]">
-                            <ResponsiveContainer width="100%" height="100%">
+                            <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                               <PieChart>
                                 <Pie
                                   data={qData.data}
@@ -2293,26 +2654,54 @@ export default function App() {
 
           {activeTab === 'calendar' && (
             <div className="space-y-6">
-              <h3 className="text-2xl font-bold">Academic Calendar</h3>
+              <div className="flex items-center justify-between">
+                <h3 className="text-2xl font-bold">Academic Calendar</h3>
+                <div className="flex items-center gap-4 bg-white dark:bg-slate-900 p-2 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+                  <button onClick={() => setCurrentMonth(subMonths(currentMonth, 1))} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors">
+                    <ChevronLeft className="w-5 h-5" />
+                  </button>
+                  <span className="font-bold w-32 text-center">{format(currentMonth, 'MMMM yyyy')}</span>
+                  <button onClick={() => setCurrentMonth(addMonths(currentMonth, 1))} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors">
+                    <ChevronRight className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
               <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm">
                 <div className="grid grid-cols-7 gap-4 mb-8 text-center font-bold text-slate-400 text-sm uppercase tracking-wider">
                   {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => <div key={day}>{day}</div>)}
                 </div>
                 <div className="grid grid-cols-7 gap-4">
-                  {Array.from({ length: 31 }, (_, i) => {
-                    const day = i + 1;
-                    const hasReport = reports.some(r => new Date(r.createdAt).getDate() === day);
-                    const hasSubmission = submissions.some(s => new Date(s.submittedAt).getDate() === day);
+                  {paddingDays.map((_, i) => (
+                    <div key={`pad-${i}`} className="h-32 rounded-2xl p-4 border border-transparent" />
+                  ))}
+                  {days.map((day, i) => {
+                    const dateStr = format(day, 'yyyy-MM-dd');
+                    const dayEvents = calendarEvents.filter(e => e.date === dateStr);
+                    const isToday = isSameDay(day, new Date());
                     
                     return (
-                      <div key={i} className={cn(
-                        "h-32 rounded-2xl p-4 border transition-all cursor-pointer hover:border-indigo-500 group",
-                        day === new Date().getDate() ? "bg-indigo-600 text-white border-indigo-600 shadow-xl shadow-indigo-200 dark:shadow-none" : "bg-slate-50 dark:bg-slate-800/50 border-slate-100 dark:border-slate-800"
-                      )}>
-                        <span className="text-lg font-bold">{day}</span>
-                        <div className="mt-2 space-y-1">
-                          {hasReport && <div className="w-full h-1.5 bg-amber-400 rounded-full" title="Analysis Report Created"></div>}
-                          {hasSubmission && <div className="w-full h-1.5 bg-emerald-400 rounded-full" title="Submission Activity"></div>}
+                      <div 
+                        key={i} 
+                        onClick={() => handleDateClick(day)}
+                        className={cn(
+                          "h-32 rounded-2xl p-4 border transition-all cursor-pointer hover:border-emerald-500 group relative overflow-hidden flex flex-col",
+                          isToday ? "bg-emerald-600 text-white shadow-lg shadow-emerald-200 dark:shadow-none border-emerald-500" : "bg-slate-50 dark:bg-slate-800/50 border-slate-100 dark:border-slate-800"
+                        )}
+                      >
+                        <span className={cn("text-lg font-bold", isToday ? "text-white" : "")}>{format(day, 'd')}</span>
+                        <div className="mt-2 space-y-1.5 flex-1 overflow-y-auto no-scrollbar">
+                          {dayEvents.map(e => (
+                            <div key={e.id} className={cn(
+                              "text-[10px] font-bold px-2 py-1 rounded truncate",
+                              isToday 
+                                ? "bg-white/20 text-white" 
+                                : e.type === 'holiday' 
+                                  ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" 
+                                  : "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
+                            )} title={e.title}>
+                              {e.title}
+                            </div>
+                          ))}
                         </div>
                       </div>
                     );
@@ -2369,8 +2758,173 @@ export default function App() {
               )}
             </div>
           )}
+          {activeTab === 'settings' && (
+            <div className="max-w-4xl mx-auto space-y-8">
+              <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+                <div className="p-6 border-b border-slate-200 dark:border-slate-800">
+                  <h2 className="text-xl font-bold">Subscription Tier</h2>
+                  <p className="text-slate-500 text-sm mt-1">Manage your current plan and billing</p>
+                </div>
+                <div className="p-6">
+                  <div className="flex items-center justify-between p-6 bg-gradient-to-r from-emerald-50 to-teal-50 dark:from-emerald-900/20 dark:to-teal-900/20 rounded-xl border border-emerald-100 dark:border-emerald-800/30">
+                    <div>
+                      <div className="flex items-center gap-3 mb-2">
+                        <h3 className="text-2xl font-bold text-emerald-700 dark:text-emerald-400 capitalize">{currentTier} Plan</h3>
+                        <span className="px-2.5 py-1 bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300 text-xs font-bold rounded-full uppercase tracking-wider">Current</span>
+                      </div>
+                      <p className="text-slate-600 dark:text-slate-400">
+                        {currentTier === 'free' && "Limited analysis (15-20/day)."}
+                        {currentTier === 'pro' && "Up to 300 files/day with AI highlights and faster analysis."}
+                        {currentTier === 'pro+' && "Unlimited fast analysis with Gemini Pro."}
+                      </p>
+                    </div>
+                    <button className="px-6 py-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-medium hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors shadow-sm">
+                      Manage Plan
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+                <div className="p-6 border-b border-slate-200 dark:border-slate-800">
+                  <h2 className="text-xl font-bold">Support & Feedback</h2>
+                  <p className="text-slate-500 text-sm mt-1">Help us improve the application</p>
+                </div>
+                <div className="p-6 space-y-4">
+                  <button className="w-full flex items-center justify-between p-4 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-emerald-300 dark:hover:border-emerald-700 hover:bg-emerald-50/50 dark:hover:bg-emerald-900/10 transition-all group">
+                    <div className="flex items-center gap-4">
+                      <div className="w-10 h-10 rounded-full bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center text-amber-600 dark:text-amber-400">
+                        <Star className="w-5 h-5" />
+                      </div>
+                      <div className="text-left">
+                        <h3 className="font-medium">Rate Us</h3>
+                        <p className="text-sm text-slate-500">Love the app? Leave a review!</p>
+                      </div>
+                    </div>
+                    <ExternalLink className="w-5 h-5 text-slate-400 group-hover:text-emerald-500 transition-colors" />
+                  </button>
+
+                  <button className="w-full flex items-center justify-between p-4 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-emerald-300 dark:hover:border-emerald-700 hover:bg-emerald-50/50 dark:hover:bg-emerald-900/10 transition-all group">
+                    <div className="flex items-center gap-4">
+                      <div className="w-10 h-10 rounded-full bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center text-blue-600 dark:text-blue-400">
+                        <Bug className="w-5 h-5" />
+                      </div>
+                      <div className="text-left">
+                        <h3 className="font-medium">Report Bugs</h3>
+                        <p className="text-sm text-slate-500">Found an issue? Let us know.</p>
+                      </div>
+                    </div>
+                    <ExternalLink className="w-5 h-5 text-slate-400 group-hover:text-emerald-500 transition-colors" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="bg-white dark:bg-slate-900 rounded-2xl border border-red-200 dark:border-red-900/50 shadow-sm overflow-hidden">
+                <div className="p-6 border-b border-red-100 dark:border-red-900/30 bg-red-50/50 dark:bg-red-900/10">
+                  <h2 className="text-xl font-bold text-red-600 dark:text-red-400">Danger Zone</h2>
+                  <p className="text-red-500/80 dark:text-red-400/80 text-sm mt-1">Irreversible actions</p>
+                </div>
+                <div className="p-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="font-medium text-slate-900 dark:text-white">Clear All Data</h3>
+                      <p className="text-sm text-slate-500 mt-1">Permanently delete all classes, students, and grading reports.</p>
+                    </div>
+                    <button 
+                      onClick={() => setIsClearDataModalOpen(true)}
+                      className="px-4 py-2 bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-500/10 dark:text-red-400 dark:hover:bg-red-500/20 rounded-lg font-medium transition-colors"
+                    >
+                      Clear Data
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
+
+        {/* Footer */}
+        <footer className="mt-auto border-t border-slate-200 dark:border-slate-800 py-8 px-6 text-center text-slate-500 dark:text-slate-400 no-print">
+          <div className="max-w-7xl mx-auto flex flex-col items-center justify-center space-y-2">
+            <h4 className="text-lg font-bold text-slate-900 dark:text-slate-100">AutonixAI</h4>
+            <p className="text-sm">Built out of curiosity to help people.</p>
+            <p className="text-xs pt-2">© 2026 AutonixAI. All rights reserved.</p>
+          </div>
+        </footer>
       </main>
+
+      <Modal isOpen={isClearDataModalOpen} onClose={() => setIsClearDataModalOpen(false)} title="Clear All Data?">
+        <div className="space-y-6">
+          <div className="p-4 bg-red-50 dark:bg-red-900/20 rounded-xl border border-red-100 dark:border-red-800/50 flex gap-3">
+            <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0" />
+            <div className="space-y-2">
+              <p className="text-sm font-bold text-red-700 dark:text-red-300">This action is irreversible!</p>
+              <p className="text-xs text-red-600 dark:text-red-400 leading-relaxed">
+                You are about to permanently delete all your classes, students, analysis reports, and submissions.
+              </p>
+            </div>
+          </div>
+          <div className="flex gap-3 pt-4">
+            <button 
+              onClick={() => setIsClearDataModalOpen(false)}
+              className="flex-1 py-3 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 rounded-xl font-bold text-sm hover:bg-slate-200 transition-all"
+            >
+              Cancel
+            </button>
+            <button 
+              onClick={handleClearAllData}
+              className="flex-1 py-3 bg-red-600 text-white rounded-xl font-bold text-sm hover:bg-red-700 shadow-lg shadow-red-200 dark:shadow-none transition-all"
+            >
+              Yes, Clear Everything
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal isOpen={isEventModalOpen} onClose={() => setIsEventModalOpen(false)} title="Add Event">
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">Event Title</label>
+            <input 
+              type="text" 
+              value={newEventTitle}
+              onChange={(e) => setNewEventTitle(e.target.value)}
+              className="w-full p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 focus:ring-2 focus:ring-emerald-500 outline-none"
+              placeholder="e.g., Parent-Teacher Meeting"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Event Type</label>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setNewEventType('important')}
+                className={cn(
+                  "flex-1 py-2 rounded-xl border text-sm font-bold transition-all",
+                  newEventType === 'important' ? "bg-emerald-100 border-emerald-200 text-emerald-700 dark:bg-emerald-900/30 dark:border-emerald-800 dark:text-emerald-400" : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50 dark:bg-slate-900 dark:border-slate-800 dark:text-slate-400"
+                )}
+              >
+                Important Day
+              </button>
+              <button
+                onClick={() => setNewEventType('holiday')}
+                className={cn(
+                  "flex-1 py-2 rounded-xl border text-sm font-bold transition-all",
+                  newEventType === 'holiday' ? "bg-amber-100 border-amber-200 text-amber-700 dark:bg-amber-900/30 dark:border-amber-800 dark:text-amber-400" : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50 dark:bg-slate-900 dark:border-slate-800 dark:text-slate-400"
+                )}
+              >
+                Holiday
+              </button>
+            </div>
+          </div>
+          <button 
+            onClick={handleAddEvent}
+            disabled={!newEventTitle.trim()}
+            className="w-full py-3 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed mt-4"
+          >
+            Add Event
+          </button>
+        </div>
+      </Modal>
 
       <Modal isOpen={isClassModalOpen} onClose={() => setIsClassModalOpen(false)} title="Create New Class">
         <div className="space-y-4">
